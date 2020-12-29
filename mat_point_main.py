@@ -11,8 +11,8 @@ gridDimInt = 32
 
 gridDimFloat = float(gridDimInt)
 
-# Time in one substep
-dt = 0.0001
+# Time in one substep; here dt = 1/1000th of 1 frame
+dt = 0.000041666
 
 # Strength of the elasticity of this substance; larger values result in more rigid materials
 youngsMod = 1000.0
@@ -23,6 +23,19 @@ poissonRatio = 0.4
 # Mass per unit volume
 particleDensity = 1.0
 
+# By default, the full simulation area is 1 cubic meter
+simulationScale = 1.0
+
+# # of frames per second
+frameRate = 24.0
+
+# % of 1 frame that a substep represents; smaller equals a higher resolution
+substepSize = 0.05
+
+# The time elapsed during one substep
+substepTime = (1.0 / frameRate) * substepSize
+
+substepsPerFrame = int(1.0 / substepSize)
 
 # Width of one dimension of a grid node
 dx = 1.0 / gridDimFloat
@@ -127,8 +140,50 @@ def clearGrid():
         gridVelocity[i, j, k] = [0.0, 0.0, 0.0]
 
 
-@ti.kernel
+@ti.pyfunc
 def substep():
+    clearGrid()
+    particleToGrid()
+    checkBoundaries()
+
+
+@ti.kernel
+def checkBoundaries():
+    for i, j, k in gridMass:
+        if gridMass[i, j, k] <= 0.0:
+            gridMass[i, j, k] = 0.00000001
+        if gridMass[i, j, k] > 0.00000002:
+            # gridVelocity currently stores momentum; divide by mass to give velocity
+            gridVelocity[i, j, k] /= gridMass[i, j, k]
+
+            # increase velocity according to acceleration over the amount of time of one substep
+            gridVelocity[i, j, k] += gravity[None] * substepTime * simulationScale
+
+            boundarySize = 5
+
+            # Wall collisions
+            # Left wall
+            if i < boundarySize and gridVelocity[i, j, k].x < 0.0:
+                gridVelocity[i, j, k].x = 0.0
+            # Right wall
+            if i > gridDimInt - boundarySize and gridVelocity[i, j, k].x > 0.0:
+                gridVelocity[i, j, k].x = 0.0
+            # Floor
+            if j < boundarySize and gridVelocity[i, j, k].y < 0.0:
+                gridVelocity[i, j, k].y = 0.0
+            # Ceiling
+            if j > gridDimInt - boundarySize and gridVelocity[i, j, k].y > 0.0:
+                gridVelocity[i, j, k].y = 0.0
+            # Front wall
+            if k < boundarySize and gridVelocity[i, j, k].z < 0.0:
+                gridVelocity[i, j, k].z = 0.0
+            # Back wall
+            if k > gridDimInt - boundarySize and gridVelocity[i, j, k].z > 0.0:
+                gridVelocity[i, j, k].z = 0.0
+
+
+@ti.kernel
+def particleToGrid():
     # Calculate particle values (Particle to Grid)
     for particle in position:
         # for this particle, compute it's base index
@@ -209,9 +264,7 @@ numFrames = 500
 for frame in range(numFrames):
     print("\nFrame " + str(frame))
 
-    # One substep is 500 * dt
-    for step in range(int((1.0 / 500.0) * (1.0 / dt))):
+    for step in range(substepsPerFrame):
         print("Step " + str(step))
-        clearGrid()
         substep()
 
