@@ -7,7 +7,9 @@ ti.init(arch=ti.cpu, excepthook=True)
 numParticles = 8000
 
 # number of divisions in the nxnxn mpm grid
-gridDim = 32
+gridDimInt = 32
+
+gridDimFloat = float(gridDimInt)
 
 # Time in one substep
 dt = 0.0001
@@ -23,7 +25,7 @@ particleDensity = 1.0
 
 
 # Width of one dimension of a grid node
-dx = 1.0 / gridDim
+dx = 1.0 / gridDimFloat
 
 # Inversion of dx, equivalent to # of dimension of node
 dxInverse = 1.0 / dx
@@ -66,10 +68,11 @@ Jp = ti.field(dtype=float, shape=numParticles)
 
 # Grid data
 # Grid node momentum/velocity
-gridVelocity = ti.Vector.field(3, dtype=float, shape=(gridDim, gridDim, gridDim))
+# Note that this field stores momentum first then updates to velocity to save space
+gridVelocity = ti.Vector.field(3, dtype=float, shape=(gridDimInt, gridDimInt, gridDimInt))
 
 # Grid node mass
-gridMass = ti.field(dtype=float, shape=(gridDim, gridDim, gridDim))
+gridMass = ti.field(dtype=float, shape=(gridDimInt, gridDimInt, gridDimInt))
 
 # External force acting on system
 gravity = ti.Vector.field(3, dtype=float, shape=())
@@ -116,13 +119,99 @@ def setUp():
         C[i] = ti.Matrix.zero(float, 3, 3)
 
 
+@ti.kernel
+def clearGrid():
+    # Set Grid values to 0
+    for i, j, k in gridMass:
+        gridMass[i, j, k] = 0.00000001
+        gridVelocity[i, j, k] = [0.0, 0.0, 0.0]
 
 
+@ti.kernel
+def substep():
+    # Calculate particle values (Particle to Grid)
+    for particle in position:
+        # for this particle, compute it's base index
+        # left/bottom-most node of the 3x3x3 nodes that affect this particle
 
+        # Check here for syntax error with int casting and with 0.5 vector
+        base = int(position[particle] * gridDimFloat - [0.5, 0.5, 0.5])
+        # distance vector from particle position to base node position
+        relPosition = position[particle] * gridDimFloat - float(base)
 
+        # Quadratic kernels for weighting influence of nearby grid nodes
+        weights = [[0.5, 0.5, 0.5] * ([1.5, 1.5, 1.5] - relPosition) * ([1.5, 1.5, 1.5] - relPosition),
+                   [0.75, 0.75, 0.75] - (relPosition - [1.0, 1.0, 1.0]) * (relPosition - [1.0, 1.0, 1.0]),
+                   [0.5, 0.5, 0.5] * (relPosition - [0.5, 0.5, 0.5]) * (relPosition - [0.5, 0.5, 0.5])]
+
+        # Gradient of interpolation weights
+        dWeights = [relPosition - [1.5, 1.5, 1.5],
+                    -2.0 * (relPosition - [1.0, 1.0, 1.0]),
+                    relPosition - [0.5, 0.5, 0.5]]
+
+        # mu and lambda remain unchanged under normal elastic conditions
+        mu = mu0
+        lam = lambda0
+
+        # Polar Singular Value Decomposition
+        U, sigma, V = ti.svd(F[particle])
+        J = 1.0
+
+        # Modify deformation gradient
+        for i in ti.static(range(3)):
+            J *= sigma[i, i]
+
+        # Compute Kirchoff stress for elasticity
+        Ftrans = F[particle].transpose()
+        Vtrans = V.transpose()
+        identity = ti.Matrix.identity(float, 3)
+        # Compute Kirchoff Stress for elasticity
+        kirchoffStress = 2 * mu * (F[particle] - (U @ Vtrans)) @ Ftrans + identity * lam * J * (J - 1)
+        # @ = Matrix Product in taichi
+
+        # Update particle to grid velocity, mass and force
+        # Iterate throught the 27 grid node neighbors
+        for i, j, k in ti.static(ti.ndrange(3, 3, 3)):
+            # which node we are in within the 3x3x3 affecting nodes
+            offset = ti.Vector([i, j, k])
+
+            # position of the corner of this node relative to particle
+            nodePos = (float(offset) - relPosition) * dx
+
+            # weight value of this node
+            weight = weights[i][0] * weights[j][1] * weights[k][2]
+
+            dWeight = ti.Vector.zero(float, 3)
+            dWeight = [gridDimFloat * dWeights[i][0] * weights[j][1] * weights[k][2],
+                       gridDimFloat * weights[i][0] * dWeights[j][1] * weights[k][2],
+                       gridDimFloat * dWeights[i][0] * weights[j][1] * dWeights[k][2]]
+
+            # force contribution of this particle is proportional to its volume, elasticity, and weighting
+            force = -1.0 * particleVolume * kirchoffStress @ dWeight
+
+            # current momentum contribution of this particle to this node equals particle mass times weighting
+            gridVelocity[base + offset] += particleMass * weight * (velocity[particle] + C[particle] @ nodePos)
+
+            # mass contribution of this particle to this node equals particle mass times weighting
+            gridMass[base + offset] += weight * particleMass
+
+            # momentum equals force * time step; add the computed force to this particle's momentum
+            gridVelocity[base + offset] += force * dt
 
 
 
 print("Begin MPM Simulation")
 
 setUp()
+
+numFrames = 500
+
+for frame in range(numFrames):
+    print("\nFrame " + str(frame))
+
+    # One substep is 500 * dt
+    for step in range(int((1.0 / 500.0) * (1.0 / dt))):
+        print("Step " + str(step))
+        clearGrid()
+        substep()
+
