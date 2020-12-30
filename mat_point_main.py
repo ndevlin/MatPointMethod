@@ -47,7 +47,9 @@ dxInverse = 1.0 / dx
 # Possible bug having to do with volume computation here
 # Particle volume should be approximately 1/8th the volume of one cube;
 # Assumes that ratio of particles and volume of box has been computed above correctly
-particleVolume = (1.0 / 8.0) * (dx ** 3.0)
+#particleVolume = (1.0 / 8.0) * (dx ** 3.0)
+particleVolume = (1.0 / 4.0) * (dx ** 2.0)
+
 
 # Assume uniform density and starting volume for every particle
 particleMass = particleVolume * particleDensity
@@ -159,9 +161,9 @@ def particleToGrid():
         # left/bottom-most node of the 3x3x3 nodes that affect this particle
 
         # Check here for syntax error with int casting and with 0.5 vector
-        base = int(position[particle] * gridDimFloat - [0.5, 0.5, 0.5])
+        base = (position[particle] * gridDimFloat - [0.5, 0.5, 0.5]).cast(int)
         # distance vector from particle position to base node position
-        relPosition = position[particle] * gridDimFloat - float(base)
+        relPosition = position[particle] * gridDimFloat - (base).cast(float)
 
         # Quadratic kernels for weighting influence of nearby grid nodes
         weights = [[0.5, 0.5, 0.5] * ([1.5, 1.5, 1.5] - relPosition) * ([1.5, 1.5, 1.5] - relPosition),
@@ -186,6 +188,7 @@ def particleToGrid():
             J *= sigma[i, i]
 
         # Compute Kirchoff stress for elasticity
+        # Possible bug here
         Ftrans = F[particle].transpose()
         Vtrans = V.transpose()
         identity = ti.Matrix.identity(float, 3)
@@ -200,7 +203,7 @@ def particleToGrid():
             offset = ti.Vector([i, j, k])
 
             # position of the corner of this node relative to particle
-            nodePos = (float(offset) - relPosition) * dx
+            nodePos = ((offset).cast(float) - relPosition) * dx
 
             # weight value of this node
             weight = weights[i][0] * weights[j][1] * weights[k][2]
@@ -208,7 +211,7 @@ def particleToGrid():
             dWeight = ti.Vector.zero(float, 3)
             dWeight = [gridDimFloat * dWeights[i][0] * weights[j][1] * weights[k][2],
                        gridDimFloat * weights[i][0] * dWeights[j][1] * weights[k][2],
-                       gridDimFloat * dWeights[i][0] * weights[j][1] * dWeights[k][2]]
+                       gridDimFloat * weights[i][0] * weights[j][1] * dWeights[k][2]]
 
             # force contribution of this particle is proportional to its volume, elasticity, and weighting
             force = -1.0 * particleVolume * kirchoffStress @ dWeight
@@ -228,14 +231,14 @@ def checkBoundaries():
     for i, j, k in gridMass:
         if gridMass[i, j, k] <= 0.0:
             gridMass[i, j, k] = 0.00000001
-        if gridMass[i, j, k] > 0.00000002:
+        if gridMass[i, j, k] > 0.0000001:
             # gridVelocity currently stores momentum; divide by mass to give velocity
             gridVelocity[i, j, k] /= gridMass[i, j, k]
 
             # increase velocity according to acceleration over the amount of time of one substep
             gridVelocity[i, j, k] += gravity[None] * substepTime * simulationScale
 
-            boundarySize = 5
+            boundarySize = 3
 
             # Wall collisions
             # Left wall
@@ -262,10 +265,10 @@ def checkBoundaries():
 def gridToParticle():
     for particle in position:
         # Base node of 27 nodes around this particle
-        base = int(position[particle] * gridDimInt - [0.5, 0.5, 0.5])
+        base = (position[particle] * gridDimFloat - [0.5, 0.5, 0.5]).cast(int)
 
         # Distance from base node to particle
-        relPosition = position[particle] * gridDimInt - float(base)
+        relPosition = position[particle] * gridDimFloat - (base).cast(float)
 
         # Quadratic kernels for weighting influence of nearby grid nodes
         weights = [[0.5, 0.5, 0.5] * ([1.5, 1.5, 1.5] - relPosition) * ([1.5, 1.5, 1.5] - relPosition),
@@ -284,8 +287,8 @@ def gridToParticle():
 
         # [i, j, k] = which of the 3x3x3 neighbor nodes we are on
         for i, j, k in ti.static(ti.ndrange(3, 3, 3)):
-            # postion of the current node base relative to this particle
-            currNodePos = ti.Vector([float(i), float(j), float(k)]) - relPosition
+            # position of the current node base relative to this particle
+            currNodePos = ti.Vector([i, j, k]).cast(float) - relPosition
 
             # Store velocity currently in this grid node
             currGridVelocity = gridVelocity[base + ti.Vector([i, j, k])]
@@ -296,21 +299,21 @@ def gridToParticle():
             dWeight = ti.Vector.zero(float, 3)
             dWeight = [gridDimFloat * dWeights[i][0] * weights[j][1] * weights[k][2],
                        gridDimFloat * weights[i][0] * dWeights[j][1] * weights[k][2],
-                       gridDimFloat * dWeights[i][0] * weights[j][1] * dWeights[k][2]]
+                       gridDimFloat * weights[i][0] * weights[j][1] * dWeights[k][2]]
 
             # new velocity added to this particle = the velocity of the current node * its weighting
-            newVelocity = weight * currGridVelocity
+            newVelocity += weight * currGridVelocity
             # new affine velocity
-            newC = 4.0 * gridDimFloat * weight * currGridVelocity.outer_product(currNodePos)
+            newC += 4.0 * gridDimFloat * weight * currGridVelocity.outer_product(currNodePos)
             # new deformation matrix
-            newF = currGridVelocity.outer_product(dWeight)
+            newF += currGridVelocity.outer_product(dWeight)
 
         # Assign the computed velocity to this particle
         velocity[particle] = newVelocity
         C[particle] = newC
 
         # position = the velocity of this particle * the time step
-        position[particle] = dt * velocity[particle]
+        position[particle] += dt * velocity[particle]
 
         # Update deformation matrix
         F[particle] = (ti.Matrix.identity(float, 3) + (dt * newF)) @ F[particle]
@@ -336,7 +339,11 @@ for frame in range(numFrames):
 
     for step in range(substepsPerFrame):
         print("Step " + str(step))
-        substep()
+        #substep()
+        clearGrid()
+        particleToGrid()
+        checkBoundaries()
+        gridToParticle()
 
     for i in range(numParticles):
         position2D[i] = [position[i].x, position[i].y]
