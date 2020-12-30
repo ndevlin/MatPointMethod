@@ -4,10 +4,10 @@ import numpy as np
 ti.init(arch=ti.cpu, excepthook=True)
 
 # Total # of particles
-numParticles = 16000
+numParticles = 128000
 
 # number of divisions in the nxnxn mpm grid
-gridDimInt = 32
+gridDimInt = 100
 
 gridDimFloat = float(gridDimInt)
 
@@ -15,10 +15,10 @@ gridDimFloat = float(gridDimInt)
 dt = 0.00041666
 
 # Strength of the elasticity of this substance; larger values result in more rigid materials
-youngsMod = 100.0
+youngsMod = 200.0
 
 # Between 0.0 and 0.5; the closer to 0.5, the more incompressible
-poissonRatio = 0.2
+poissonRatio = 0.4
 
 # Mass per unit volume
 particleDensity = 1.0
@@ -32,6 +32,10 @@ frameRate = 24.0
 # % of 1 frame that a substep represents; smaller equals a higher resolution
 substepSize = 0.05
 
+cube1Width = 0.2
+
+cube2Width = 0.2
+
 # The time elapsed during one substep
 substepTime = (1.0 / frameRate) * substepSize
 
@@ -44,11 +48,14 @@ dx = 1.0 / gridDimFloat
 dxInverse = 1.0 / dx
 
 
-# Possible bug having to do with volume computation here
-# Particle volume should be approximately 1/8th the volume of one cube;
-# Assumes that ratio of particles and volume of box has been computed above correctly
-particleVolume = (1.0 / 8.0) * (dx ** 3.0)
+
+#particleVolume = (1.0 / 8.0) * (dx ** 3.0)
 #particleVolume = (1.0 / 4.0) * (dx ** 2.0)
+# increase volume to allow some overlap of particle volume regions
+volumeMultiplier = 10.0
+
+# particle volume equals total volume of shapes divided by number of particles composing them
+particleVolume = volumeMultiplier * ((cube1Width ** 3) + (cube2Width ** 3)) / float(numParticles)
 
 
 # Assume uniform density and starting volume for every particle
@@ -92,12 +99,24 @@ gridVelocity = ti.Vector.field(3, dtype=float, shape=(gridDimInt, gridDimInt, gr
 # Grid node mass
 gridMass = ti.field(dtype=float, shape=(gridDimInt, gridDimInt, gridDimInt))
 
+particleOutput = ti.field(dtype=float, shape=numParticles * 3)
+
 # External force acting on system
 gravity = ti.Vector.field(3, dtype=float, shape=())
 
 gravity[None] = [0, -9.8, 0]
 
+
+@ti.kernel
+def processParticleArray():
+    for i in range(numParticles * 3):
+        particleOutput[(i // 3) * 3] = position[i // 3].x
+        particleOutput[(i // 3) * 3 + 1] = position[i // 3].y
+        particleOutput[(i // 3) * 3 + 2] = position[i // 3].z
+
+
 # Output position data to a file
+@ti.pyfunc
 def writePly(frameNum):
     fileObj = open(str(frameNum) + ".ply", "w")
 
@@ -109,11 +128,18 @@ def writePly(frameNum):
     fileObj.write("property float z\n")
     fileObj.write("end_header\n")
 
+    processParticleArray()
+
+    listToPrint = [None] * (numParticles * 3)
+    listToPrint = particleOutput
+
     # Positions to strings
-    for i in range(numParticles):
-        fileObj.write(str(position[i].x) + " " +
-                          str(position[i].y) + " " +
-                          str(position[i].z) + "\n")
+    for i in range(0, numParticles * 3, 3):
+        printStr = ""
+        printStr += str(listToPrint[i]) + " "
+        printStr += str(listToPrint[i + 1]) + " "
+        printStr += str(listToPrint[i + 2]) + "\n"
+        fileObj.write(printStr)
 
     fileObj.close()
 
@@ -124,11 +150,9 @@ def setUp():
 
     particlesPerCube = numParticles // 2
 
-    cube1Base[None] = [0.25, 0.7, 0.4]
-    cube1Width = 0.2
+    cube1Base[None] = [0.25, 0.5, 0.5]
 
-    cube2Base[None] = [0.35, 0.2, 0.4]
-    cube2Width = 0.2
+    cube2Base[None] = [0.35, 0.05, 0.5]
 
     # First Cube
     # Set initial positions by allocating positions randomly within bounds of cube
@@ -337,6 +361,13 @@ def gridToParticle():
         F[particle] = (ti.Matrix.identity(float, 3) + (dt * newF)) @ F[particle]
 
 
+@ti.kernel
+def from3Dto2D():
+    for i in range(numParticles):
+        position2D[i] = [position[i].x, position[i].y]
+
+
+
 print("Begin MPM Simulation")
 
 gui = ti.GUI("MPM Simulation", res=512, background_color=0x000000)
@@ -345,14 +376,13 @@ setUp()
 
 writePly(0)
 
-for i in range(numParticles):
-    position2D[i] = [position[i].x, position[i].y]
+from3Dto2D()
 
 gui.circles(position2D.to_numpy(), radius = 2.0, color=0x990000)
 
 gui.show()
 
-numFrames = 100
+numFrames = 200
 
 for frame in range(numFrames):
     print("\nFrame " + str(frame))
@@ -361,18 +391,12 @@ for frame in range(numFrames):
         #print("Step " + str(step))
         substep()
 
+    # Note: Disable writePly for near-realtime GPU processing
     writePly(frame)
 
-
-    print("position: ")
-    print(position[0].y)
-    print("velocity: ")
-    print(velocity[0].y)
-
-
-    for i in range(numParticles):
-        position2D[i] = [position[i].x, position[i].y]
+    from3Dto2D()
 
     gui.circles(position2D.to_numpy(), radius = 2.0, color=0x990000)
 
     gui.show()
+
