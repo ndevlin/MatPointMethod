@@ -4,7 +4,7 @@ import numpy as np
 ti.init(arch=ti.cpu, excepthook=True)
 
 # Total # of particles
-numParticles = 1000
+numParticles = 16000
 
 # number of divisions in the nxnxn mpm grid
 gridDimInt = 32
@@ -12,13 +12,13 @@ gridDimInt = 32
 gridDimFloat = float(gridDimInt)
 
 # Time in one substep; here dt = 1/1000th of 1 frame
-dt = 0.000041666
+dt = 0.00041666
 
 # Strength of the elasticity of this substance; larger values result in more rigid materials
-youngsMod = 1000.0
+youngsMod = 100.0
 
 # Between 0.0 and 0.5; the closer to 0.5, the more incompressible
-poissonRatio = 0.4
+poissonRatio = 0.2
 
 # Mass per unit volume
 particleDensity = 1.0
@@ -48,6 +48,7 @@ dxInverse = 1.0 / dx
 # Particle volume should be approximately 1/8th the volume of one cube;
 # Assumes that ratio of particles and volume of box has been computed above correctly
 particleVolume = (1.0 / 8.0) * (dx ** 3.0)
+#particleVolume = (1.0 / 4.0) * (dx ** 2.0)
 
 
 # Assume uniform density and starting volume for every particle
@@ -96,6 +97,25 @@ gravity = ti.Vector.field(3, dtype=float, shape=())
 
 gravity[None] = [0, -9.8, 0]
 
+# Output position data to a file
+def writePly(frameNum):
+    fileObj = open(str(frameNum) + ".ply", "w")
+
+    fileObj.write("ply\n")
+    fileObj.write("format ascii 1.0\n")
+    fileObj.write("element vertex " + str(numParticles) + "\n")
+    fileObj.write("property float x\n")
+    fileObj.write("property float y\n")
+    fileObj.write("property float z\n")
+    fileObj.write("end_header\n")
+
+    # Positions to strings
+    for i in range(numParticles):
+        fileObj.write(str(position[i].x) + " " +
+                          str(position[i].y) + " " +
+                          str(position[i].z) + "\n")
+
+    fileObj.close()
 
 
 @ti.kernel
@@ -104,10 +124,10 @@ def setUp():
 
     particlesPerCube = numParticles // 2
 
-    cube1Base[None] = [0.25, 0.6, 0.5]
+    cube1Base[None] = [0.25, 0.7, 0.4]
     cube1Width = 0.2
 
-    cube2Base[None] = [0.35, 0.1, 0.5]
+    cube2Base[None] = [0.35, 0.2, 0.4]
     cube2Width = 0.2
 
     # First Cube
@@ -236,7 +256,7 @@ def checkBoundaries():
             # increase velocity according to acceleration over the amount of time of one substep
             gridVelocity[i, j, k] += gravity[None] * substepTime * simulationScale
 
-            boundarySize = 5
+            boundarySize = 4
 
             # Wall collisions
             # Left wall
@@ -323,6 +343,8 @@ gui = ti.GUI("MPM Simulation", res=512, background_color=0x000000)
 
 setUp()
 
+writePly(0)
+
 for i in range(numParticles):
     position2D[i] = [position[i].x, position[i].y]
 
@@ -330,14 +352,23 @@ gui.circles(position2D.to_numpy(), radius = 2.0, color=0x990000)
 
 gui.show()
 
-numFrames = 500
+numFrames = 100
 
 for frame in range(numFrames):
     print("\nFrame " + str(frame))
 
     for step in range(substepsPerFrame):
-        print("Step " + str(step))
+        #print("Step " + str(step))
         substep()
+
+    writePly(frame)
+
+
+    print("position: ")
+    print(position[0].y)
+    print("velocity: ")
+    print(velocity[0].y)
+
 
     for i in range(numParticles):
         position2D[i] = [position[i].x, position[i].y]
