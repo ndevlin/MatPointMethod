@@ -1,7 +1,12 @@
+# Material Point Method Simulator written by Nathan Devlin
+# Referenced materials from Professor Chenfanfu Jiang and Xuan Li and Joshuah Wolper
+
 import taichi as ti
 import numpy as np
 
-ti.init(arch=ti.cpu, excepthook=True)
+# Use GPU for fast, near-real-time simulation,
+# use CPU for writing 3D data to .ply files
+ti.init(arch=ti.gpu, excepthook=True)
 
 # Total # of particles
 numParticles = 128000
@@ -29,11 +34,11 @@ simulationScale = 1.0
 # # of frames per second
 frameRate = 24.0
 
-# % of 1 frame that a substep represents; smaller equals a higher resolution
+# % of 1 frame that a substep represents; smaller equals a higher temporal resolution
 substepSize = 0.05
 
+# Determines the dimensions of the 2 cubes
 cube1Width = 0.2
-
 cube2Width = 0.2
 
 # The time elapsed during one substep
@@ -44,19 +49,12 @@ substepsPerFrame = int(1.0 / substepSize)
 # Width of one dimension of a grid node
 dx = 1.0 / gridDimFloat
 
-# Inversion of dx, equivalent to # of dimension of node
-dxInverse = 1.0 / dx
-
-
-
-#particleVolume = (1.0 / 8.0) * (dx ** 3.0)
-#particleVolume = (1.0 / 4.0) * (dx ** 2.0)
-# increase volume to allow some overlap of particle volume regions
+# increase volume to allow overlap of particle volume regions
 volumeMultiplier = 10.0
 
 # particle volume equals total volume of shapes divided by number of particles composing them
+# This should equate to roughly 8 particles per occupied grid node
 particleVolume = volumeMultiplier * ((cube1Width ** 3) + (cube2Width ** 3)) / float(numParticles)
-
 
 # Assume uniform density and starting volume for every particle
 particleMass = particleVolume * particleDensity
@@ -99,6 +97,7 @@ gridVelocity = ti.Vector.field(3, dtype=float, shape=(gridDimInt, gridDimInt, gr
 # Grid node mass
 gridMass = ti.field(dtype=float, shape=(gridDimInt, gridDimInt, gridDimInt))
 
+# Data structure to improve speed of transfer of data from taichi to python scope
 particleOutput = ti.field(dtype=float, shape=numParticles * 3)
 
 # External force acting on system
@@ -107,6 +106,8 @@ gravity = ti.Vector.field(3, dtype=float, shape=())
 gravity[None] = [0, -9.8, 0]
 
 
+# Move particle position data from position[] to particleOutput[] to
+# facilitate moving from taichi to python scope for output to a file
 @ti.kernel
 def processParticleArray():
     for i in range(numParticles * 3):
@@ -139,19 +140,21 @@ def writePly(frameNum):
         printStr += str(listToPrint[i]) + " "
         printStr += str(listToPrint[i + 1]) + " "
         printStr += str(listToPrint[i + 2]) + "\n"
+        # write to the file
         fileObj.write(printStr)
 
     fileObj.close()
 
 
+# Populate the data structures
+# Here we create two cubes give them initial positions, and set all other values to 0
 @ti.kernel
 def setUp():
     # Create 2 cubes
-
     particlesPerCube = numParticles // 2
 
+    # Set the position of the bottom-left corner of the cube
     cube1Base[None] = [0.25, 0.5, 0.5]
-
     cube2Base[None] = [0.35, 0.05, 0.5]
 
     # First Cube
@@ -180,6 +183,7 @@ def setUp():
         C[i] = ti.Matrix.zero(float, 3, 3)
 
 
+# Go through one iteration of the simulation
 @ti.pyfunc
 def substep():
     clearGrid()
@@ -188,23 +192,22 @@ def substep():
     gridToParticle()
 
 
+# Set velocities and masses of the grid nodes to 0
 @ti.kernel
 def clearGrid():
-    # Set Grid values to 0
     for i, j, k in gridMass:
         gridMass[i, j, k] = 0.00000001
         gridVelocity[i, j, k] = [0.0, 0.0, 0.0]
 
 
+# Transfer information about each particle to the corresponding grid nodes
 @ti.kernel
 def particleToGrid():
-    # Calculate particle values (Particle to Grid)
     for particle in position:
-        # for this particle, compute it's base index
-        # left/bottom-most node of the 3x3x3 nodes that affect this particle
-
-        # Check here for syntax error with int casting and with 0.5 vector
+        # For this particle, compute it's base index, the left/bottom-most
+        # node of the 3x3x3 nodes that affect this particle
         base = int(position[particle] * gridDimFloat - [0.5, 0.5, 0.5])
+
         # distance vector from particle position to base node position
         relPosition = position[particle] * gridDimFloat - float(base)
 
@@ -234,7 +237,6 @@ def particleToGrid():
         Ftrans = F[particle].transpose()
         Vtrans = V.transpose()
         identity = ti.Matrix.identity(float, 3)
-        # Compute Kirchoff Stress for elasticity
         kirchoffStress = 2 * mu * (F[particle] - (U @ Vtrans)) @ Ftrans + identity * lam * J * (J - 1)
         # @ = Matrix Product in taichi
 
@@ -264,10 +266,11 @@ def particleToGrid():
             # mass contribution of this particle to this node equals particle mass times weighting
             gridMass[base + offset] += weight * particleMass
 
-            # momentum equals force * time step; add the computed force to this particle's momentum
+            # momentum equals force * time step; add the computed force to this node's momentum
             gridVelocity[base + offset] += force * dt
 
 
+# Stop particles from going out of the bounds of the simulation
 @ti.kernel
 def checkBoundaries():
     for i, j, k in gridMass:
@@ -280,6 +283,7 @@ def checkBoundaries():
             # increase velocity according to acceleration over the amount of time of one substep
             gridVelocity[i, j, k] += gravity[None] * substepTime * simulationScale
 
+            # Number of grid nodes to use as a border
             boundarySize = 4
 
             # Wall collisions
@@ -303,6 +307,7 @@ def checkBoundaries():
                 gridVelocity[i, j, k].z = 0.0
 
 
+# Transfer grid node information back to the particles
 @ti.kernel
 def gridToParticle():
     for particle in position:
@@ -329,7 +334,7 @@ def gridToParticle():
 
         # [i, j, k] = which of the 3x3x3 neighbor nodes we are on
         for i, j, k in ti.static(ti.ndrange(3, 3, 3)):
-            # postion of the current node base relative to this particle
+            # position of the current node base relative to this particle
             currNodePos = ti.Vector([float(i), float(j), float(k)]) - relPosition
 
             # Store velocity currently in this grid node
@@ -354,23 +359,25 @@ def gridToParticle():
         velocity[particle] = newVelocity
         C[particle] = newC
 
-        # position = the velocity of this particle * the time step
+        # position += the velocity of this particle * the time step
         position[particle] += dt * velocity[particle]
 
         # Update deformation matrix
         F[particle] = (ti.Matrix.identity(float, 3) + (dt * newF)) @ F[particle]
 
 
+# Populate a 2D position field for visualization
 @ti.kernel
 def from3Dto2D():
     for i in range(numParticles):
         position2D[i] = [position[i].x, position[i].y]
 
 
+# Begin simulation main code
 
 print("Begin MPM Simulation")
 
-gui = ti.GUI("MPM Simulation", res=512, background_color=0x000000)
+gui = ti.GUI("MPM Simulation", res=720, background_color=0x000000)
 
 setUp()
 
@@ -379,7 +386,6 @@ writePly(0)
 from3Dto2D()
 
 gui.circles(position2D.to_numpy(), radius = 2.0, color=0x990000)
-
 gui.show()
 
 numFrames = 200
@@ -392,7 +398,7 @@ for frame in range(numFrames):
         substep()
 
     # Note: Disable writePly for near-realtime GPU processing
-    writePly(frame)
+    #writePly(frame)
 
     from3Dto2D()
 
