@@ -132,54 +132,20 @@ def setUp():
         C[i] = ti.Matrix.zero(float, 3, 3)
 
 
+@ti.pyfunc
+def substep():
+    clearGrid()
+    particleToGrid()
+    checkBoundaries()
+    gridToParticle()
+
+
 @ti.kernel
 def clearGrid():
     # Set Grid values to 0
     for i, j, k in gridMass:
         gridMass[i, j, k] = 0.00000001
         gridVelocity[i, j, k] = [0.0, 0.0, 0.0]
-
-
-@ti.pyfunc
-def substep():
-    clearGrid()
-    particleToGrid()
-    checkBoundaries()
-
-
-@ti.kernel
-def checkBoundaries():
-    for i, j, k in gridMass:
-        if gridMass[i, j, k] <= 0.0:
-            gridMass[i, j, k] = 0.00000001
-        if gridMass[i, j, k] > 0.00000002:
-            # gridVelocity currently stores momentum; divide by mass to give velocity
-            gridVelocity[i, j, k] /= gridMass[i, j, k]
-
-            # increase velocity according to acceleration over the amount of time of one substep
-            gridVelocity[i, j, k] += gravity[None] * substepTime * simulationScale
-
-            boundarySize = 5
-
-            # Wall collisions
-            # Left wall
-            if i < boundarySize and gridVelocity[i, j, k].x < 0.0:
-                gridVelocity[i, j, k].x = 0.0
-            # Right wall
-            if i > gridDimInt - boundarySize and gridVelocity[i, j, k].x > 0.0:
-                gridVelocity[i, j, k].x = 0.0
-            # Floor
-            if j < boundarySize and gridVelocity[i, j, k].y < 0.0:
-                gridVelocity[i, j, k].y = 0.0
-            # Ceiling
-            if j > gridDimInt - boundarySize and gridVelocity[i, j, k].y > 0.0:
-                gridVelocity[i, j, k].y = 0.0
-            # Front wall
-            if k < boundarySize and gridVelocity[i, j, k].z < 0.0:
-                gridVelocity[i, j, k].z = 0.0
-            # Back wall
-            if k > gridDimInt - boundarySize and gridVelocity[i, j, k].z > 0.0:
-                gridVelocity[i, j, k].z = 0.0
 
 
 @ti.kernel
@@ -253,6 +219,98 @@ def particleToGrid():
             # momentum equals force * time step; add the computed force to this particle's momentum
             gridVelocity[base + offset] += force * dt
 
+
+@ti.kernel
+def checkBoundaries():
+    for i, j, k in gridMass:
+        if gridMass[i, j, k] <= 0.0:
+            gridMass[i, j, k] = 0.00000001
+        if gridMass[i, j, k] > 0.00000002:
+            # gridVelocity currently stores momentum; divide by mass to give velocity
+            gridVelocity[i, j, k] /= gridMass[i, j, k]
+
+            # increase velocity according to acceleration over the amount of time of one substep
+            gridVelocity[i, j, k] += gravity[None] * substepTime * simulationScale
+
+            boundarySize = 5
+
+            # Wall collisions
+            # Left wall
+            if i < boundarySize and gridVelocity[i, j, k].x < 0.0:
+                gridVelocity[i, j, k].x = 0.0
+            # Right wall
+            if i > gridDimInt - boundarySize and gridVelocity[i, j, k].x > 0.0:
+                gridVelocity[i, j, k].x = 0.0
+            # Floor
+            if j < boundarySize and gridVelocity[i, j, k].y < 0.0:
+                gridVelocity[i, j, k].y = 0.0
+            # Ceiling
+            if j > gridDimInt - boundarySize and gridVelocity[i, j, k].y > 0.0:
+                gridVelocity[i, j, k].y = 0.0
+            # Front wall
+            if k < boundarySize and gridVelocity[i, j, k].z < 0.0:
+                gridVelocity[i, j, k].z = 0.0
+            # Back wall
+            if k > gridDimInt - boundarySize and gridVelocity[i, j, k].z > 0.0:
+                gridVelocity[i, j, k].z = 0.0
+
+
+@ti.kernel
+def gridToParticle():
+    for particle in position:
+        # Base node of 27 nodes around this particle
+        base = int(position[particle] * gridDimInt - [0.5, 0.5, 0.5])
+
+        # Distance from base node to particle
+        relPosition = position[particle] * gridDimInt - float(base)
+
+        # Quadratic kernels for weighting influence of nearby grid nodes
+        weights = [[0.5, 0.5, 0.5] * ([1.5, 1.5, 1.5] - relPosition) * ([1.5, 1.5, 1.5] - relPosition),
+                   [0.75, 0.75, 0.75] - (relPosition - [1.0, 1.0, 1.0]) * (relPosition - [1.0, 1.0, 1.0]),
+                   [0.5, 0.5, 0.5] * (relPosition - [0.5, 0.5, 0.5]) * (relPosition - [0.5, 0.5, 0.5])]
+
+        # Gradient of interpolation weights
+        dWeights = [relPosition - [1.5, 1.5, 1.5],
+                    -2.0 * (relPosition - [1.0, 1.0, 1.0]),
+                    relPosition - [0.5, 0.5, 0.5]]
+
+        # Create new velocity, affine velocity, and deformation matrix at zero
+        newVelocity = ti.Vector.zero(float, 3)
+        newC = ti.Matrix.zero(float, 3, 3)
+        newF = ti.Matrix.zero(float, 3, 3)
+
+        # [i, j, k] = which of the 3x3x3 neighbor nodes we are on
+        for i, j, k in ti.static(ti.ndrange(3, 3, 3)):
+            # postion of the current node base relative to this particle
+            currNodePos = ti.Vector([float(i), float(j), float(k)]) - relPosition
+
+            # Store velocity currently in this grid node
+            currGridVelocity = gridVelocity[base + ti.Vector([i, j, k])]
+
+            # weight value of this node
+            weight = weights[i][0] * weights[j][1] * weights[k][2]
+
+            dWeight = ti.Vector.zero(float, 3)
+            dWeight = [gridDimFloat * dWeights[i][0] * weights[j][1] * weights[k][2],
+                       gridDimFloat * weights[i][0] * dWeights[j][1] * weights[k][2],
+                       gridDimFloat * dWeights[i][0] * weights[j][1] * dWeights[k][2]]
+
+            # new velocity added to this particle = the velocity of the current node * its weighting
+            newVelocity = weight * currGridVelocity
+            # new affine velocity
+            newC = 4.0 * gridDimFloat * weight * currGridVelocity.outer_product(currNodePos)
+            # new deformation matrix
+            newF = currGridVelocity.outer_product(dWeight)
+
+        # Assign the computed velocity to this particle
+        velocity[particle] = newVelocity
+        C[particle] = newC
+
+        # position = the velocity of this particle * the time step
+        position[particle] = dt * velocity[particle]
+
+        # Update deformation matrix
+        F[particle] = (ti.Matrix.identity(float, 3) + (dt * newF)) @ F[particle]
 
 
 print("Begin MPM Simulation")
