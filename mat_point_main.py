@@ -4,7 +4,7 @@ import numpy as np
 ti.init(arch=ti.cpu, excepthook=True)
 
 # Total # of particles
-numParticles = 8000
+numParticles = 1000
 
 # number of divisions in the nxnxn mpm grid
 gridDimInt = 32
@@ -67,6 +67,9 @@ cube2Base = ti.Vector.field(3, dtype=float, shape=())
 
 position = ti.Vector.field(3, dtype=float, shape=numParticles)
 
+# For display purposes
+position2D = ti.Vector.field(2, dtype=float, shape=numParticles)
+
 velocity = ti.Vector.field(3, dtype=float, shape=numParticles)
 
 # Affine velocity field to account for particle angular momentum
@@ -100,18 +103,18 @@ def setUp():
 
     particlesPerCube = numParticles // 2
 
-    cube1Base[None] = [0.25, 0.5, 0.6]
+    cube1Base[None] = [0.25, 0.6, 0.5]
     cube1Width = 0.2
 
-    cube2Base[None] = [0.35, 0.5, 0.1]
+    cube2Base[None] = [0.35, 0.1, 0.5]
     cube2Width = 0.2
 
     # First Cube
     # Set initial positions by allocating positions randomly within bounds of cube
     for i in range(particlesPerCube):
-        position[i] = [ti.random() * cube1Width + cube2Base[None][0],
-                       ti.random() * cube1Width + cube2Base[None][1],
-                       ti.random() * cube1Width + cube2Base[None][2]]
+        position[i] = [ti.random() * cube1Width + cube1Base[None][0],
+                       ti.random() * cube1Width + cube1Base[None][1],
+                       ti.random() * cube1Width + cube1Base[None][2]]
 
         #Set intial velocities, angular momentum, Deformation gradient and Plastic deformation to 0
         velocity[i] = [0.0, 0.0, 0.0]
@@ -315,7 +318,16 @@ def gridToParticle():
 
 print("Begin MPM Simulation")
 
+gui = ti.GUI("MPM Simulation", res=512, background_color=0x000000)
+
 setUp()
+
+for i in range(numParticles):
+    position2D[i] = [position[i].x, position[i].y]
+
+gui.circles(position2D.to_numpy(), radius = 2.0, color=0x990000)
+
+gui.show()
 
 numFrames = 500
 
@@ -326,3 +338,9 @@ for frame in range(numFrames):
         print("Step " + str(step))
         substep()
 
+    for i in range(numParticles):
+        position2D[i] = [position[i].x, position[i].y]
+
+    gui.circles(position2D.to_numpy(), radius = 2.0, color=0x990000)
+
+    gui.show()
