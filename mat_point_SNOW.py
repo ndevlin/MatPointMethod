@@ -8,7 +8,7 @@ import taichi as ti
 ti.init(arch=ti.gpu, excepthook=True)
 
 # Total # of particles
-numParticles = 128000
+numParticles = 10000
 
 # number of divisions in the nxnxn mpm grid
 gridDimInt = 100
@@ -16,7 +16,7 @@ gridDimInt = 100
 gridDimFloat = float(gridDimInt)
 
 # Time in one substep; here dt = 1/1000th of 1 frame
-dt = 0.00041666
+dt = 0.0000041666
 
 # Strength of the elasticity of this substance; larger values result in more rigid materials
 youngsMod = 200.0
@@ -83,6 +83,11 @@ C = ti.Matrix.field(3, 3, dtype=float, shape=numParticles)
 
 # Deformation gradient matrices
 F = ti.Matrix.field(3, 3, dtype=float, shape=numParticles)
+
+
+# Plastic deformation matrices
+Fp = ti.Matrix.field(3, 3, dtype=float, shape=numParticles)
+
 
 # Plastic deformation factor
 Jp = ti.field(dtype=float, shape=numParticles)
@@ -166,6 +171,7 @@ def setUp():
         #Set intial velocities, angular momentum, Deformation gradient and Plastic deformation to 0
         velocity[i] = [0.0, 0.0, 0.0]
         F[i] = ti.Matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        Fp[i] = ti.Matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
         Jp[i] = 1.0
         C[i] = ti.Matrix.zero(float, 3, 3)
 
@@ -361,8 +367,60 @@ def gridToParticle():
         # position += the velocity of this particle * the time step
         position[particle] += dt * velocity[particle]
 
+
+
+
         # Update deformation matrix
-        F[particle] = (ti.Matrix.identity(float, 3) + (dt * newF)) @ F[particle]
+        # F[particle] = (ti.Matrix.identity(float, 3) + (dt * newF)) @ F[particle]
+
+        if(particle == 0):
+            FEtrial = (ti.Matrix.identity(float, 3) + (dt * newF)) @ F[particle]
+
+            print("FEtrial")
+            print(FEtrial)
+
+            U, sigma, V = ti.svd(FEtrial)
+
+            print("U")
+            print(U)
+            print("sigma")
+            print(sigma)
+            print("V")
+            print(V)
+
+            newSigma = sigma
+
+            for i in ti.static(range(3)):
+                if sigma[i, i] > 1.1:
+                    newSigma[i, i] = 1.1
+                if sigma[i, i] < 0.9:
+                    newSigma[i, i] = 0.9
+
+            print("newSigma")
+            print(newSigma)
+
+            newFElastic = (U @ newSigma) @ (V.transpose())
+
+            print("newFElastic")
+            print(newFElastic)
+
+            newFplastic = ((newFElastic.inverse()) @ FEtrial) @ Fp[particle]
+
+            print("newFplastic")
+            print(newFplastic)
+
+            Fp[particle] = newFplastic
+
+            print("Fp[particle]")
+            print(Fp[particle])
+
+            F[particle] = newFElastic @ newFplastic
+
+            print("F[particle]")
+            print(F[particle])
+
+
+
 
 
 # Populate a 2D position field for visualization
@@ -387,7 +445,7 @@ from3Dto2D()
 gui.circles(position2D.to_numpy(), radius = 2.0, color=0x990000)
 gui.show()
 
-numFrames = 200
+numFrames = 300
 
 for frame in range(numFrames):
     print("\nFrame " + str(frame))
