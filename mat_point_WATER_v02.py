@@ -1,6 +1,8 @@
 # Material Point Method Simulator written by Nathan Devlin
 # Referenced materials from Professor Chenfanfu Jiang and Xuan Li and Joshuah Wolper
 
+# Fluid simulation version
+
 import taichi as ti
 
 # Use GPU for fast, near-real-time simulation,
@@ -18,14 +20,11 @@ gridDimFloat = float(gridDimInt)
 # Time in one substep; here dt = 1/1000th of 1 frame
 dt = 0.00041666
 
-# Strength of the elasticity of this substance; larger values result in more rigid materials
-youngsMod = 2.0
-
-# Between 0.0 and 0.5; the closer to 0.5, the more incompressible
-poissonRatio = 0.48
-
+# bulk modulus k determines how resistant to compression the material is
+# The higher the value, the less compressible the material
 bulkModulus = 2.15
 
+# Exponent factor for J
 gamma = 7.0
 
 # Mass per unit volume
@@ -40,9 +39,8 @@ frameRate = 24.0
 # % of 1 frame that a substep represents; smaller equals a higher temporal resolution
 substepSize = 0.05
 
-# Determines the dimensions of the 2 cubes
-cube1Width = 0.3
-#cube2Width = 0.2
+# Determines the dimensions of the cube
+cubeWidth = 0.3
 
 # The time elapsed during one substep
 substepTime = (1.0 / frameRate) * substepSize
@@ -53,25 +51,18 @@ substepsPerFrame = int(1.0 / substepSize)
 dx = 1.0 / gridDimFloat
 
 # increase volume to allow overlap of particle volume regions
+# Can tweak to modify look/ behavior of material
 volumeMultiplier = 5.0
 
 # particle volume equals total volume of shapes divided by number of particles composing them
 # This should equate to roughly 8 particles per occupied grid node
-particleVolume = volumeMultiplier * (cube1Width ** 3) / float(numParticles)#+ (cube2Width ** 3)) / float(numParticles)
+particleVolume = volumeMultiplier * (cubeWidth ** 3) / float(numParticles)
 
 # Assume uniform density and starting volume for every particle
 particleMass = particleVolume * particleDensity
 
-# Lame parameters
-# Shear term
-mu0 = youngsMod / (2.0 * (1.0 + poissonRatio))
-
-# Dilational term
-lambda0 = (youngsMod * poissonRatio) / ((1.0 + poissonRatio) * (1.0 - 2.0 * poissonRatio))
-
-# Bottom-left starting corner of each cube
-cube1Base = ti.Vector.field(3, dtype=float, shape=())
-cube2Base = ti.Vector.field(3, dtype=float, shape=())
+# Bottom-left starting corner of  cube
+cubeBase = ti.Vector.field(3, dtype=float, shape=())
 
 # Particle data
 
@@ -85,12 +76,8 @@ velocity = ti.Vector.field(3, dtype=float, shape=numParticles)
 # Affine velocity field to account for particle angular momentum
 C = ti.Matrix.field(3, 3, dtype=float, shape=numParticles)
 
-# Deformation gradient matrices
-#F = ti.Matrix.field(3, 3, dtype=float, shape=numParticles)
-
 # Plastic deformation factor
 Jp = ti.field(dtype=float, shape=numParticles)
-
 
 # Grid data
 # Grid node momentum/velocity
@@ -150,42 +137,23 @@ def writePly(frameNum):
 
 
 # Populate the data structures
-# Here we create two cubes give them initial positions, and set all other values to 0
+# Here we create a cube and give it initial position, and set all other values to 0
 @ti.kernel
 def setUp():
-    # Create 2 cubes
-    particlesPerCube = numParticles #// 2
 
     # Set the position of the bottom-left corner of the cube
-    cube1Base[None] = [0.25, 0.05, 0.5]
-    #cube2Base[None] = [0.35, 0.05, 0.5]
+    cubeBase[None] = [0.25, 0.05, 0.5]
 
-    # First Cube
     # Set initial positions by allocating positions randomly within bounds of cube
-    for i in range(particlesPerCube):
-        position[i] = [ti.random() * cube1Width + cube1Base[None][0],
-                       ti.random() * cube1Width + cube1Base[None][1],
-                       ti.random() * cube1Width + cube1Base[None][2]]
+    for i in range(numParticles):
+        position[i] = [ti.random() * cubeWidth + cubeBase[None][0],
+                       ti.random() * cubeWidth + cubeBase[None][1],
+                       ti.random() * cubeWidth + cubeBase[None][2]]
 
         #Set intial velocities, angular momentum, Deformation gradient and Plastic deformation to 0
         velocity[i] = [0.0, 0.0, 0.0]
-        #F[i] = ti.Matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
         Jp[i] = 1.0
         C[i] = ti.Matrix.zero(float, 3, 3)
-
-    '''
-    # Second Cube
-    for i in range(particlesPerCube, numParticles):
-        position[i] = [ti.random() * cube2Width + cube2Base[None][0],
-                       ti.random() * cube2Width + cube2Base[None][1],
-                       ti.random() * cube2Width + cube2Base[None][2]]
-
-        # Set intial velocities, angular momentum, Deformation gradient and Plastic deformation to 0
-        velocity[i] = [0.0, 0.0, 0.0]
-        #F[i] = ti.Matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-        Jp[i] = 1.0
-        C[i] = ti.Matrix.zero(float, 3, 3)
-    '''
 
 
 # Go through one iteration of the simulation
@@ -227,31 +195,8 @@ def particleToGrid():
                     relPosition - [0.5, 0.5, 0.5]]
 
 
-        '''
-
-        # mu and lambda remain unchanged under normal elastic conditions
-        mu = mu0
-        lam = lambda0
-
-        # Polar Singular Value Decomposition
-        U, sigma, V = ti.svd(F[particle])
-        J = 1.0
-
-        # Modify deformation gradient
-        for i in ti.static(range(3)):
-            J *= sigma[i, i]
-
-        # Compute Kirchoff stress for elasticity
-        Ftrans = F[particle].transpose()
-        Vtrans = V.transpose()
-        identity = ti.Matrix.identity(float, 3)
-        kirchoffStress = 2 * mu * (F[particle] - (U @ Vtrans)) @ Ftrans + identity * lam * J * (J - 1)
-        # @ = Matrix Product in taichi
-
-        '''
-
         # Update particle to grid velocity, mass and force
-        # Iterate throught the 27 grid node neighbors
+        # Iterate through the 27 grid node neighbors
         for i, j, k in ti.static(ti.ndrange(3, 3, 3)):
             # which node we are in within the 3x3x3 affecting nodes
             offset = ti.Vector([i, j, k])
@@ -267,14 +212,9 @@ def particleToGrid():
                        gridDimFloat * weights[i][0] * dWeights[j][1] * weights[k][2],
                        gridDimFloat * weights[i][0] * weights[j][1] * dWeights[k][2]]
 
-            # force contribution of this particle is proportional to its volume, elasticity, and weighting
-            #force = -1.0 * particleVolume * kirchoffStress @ dWeight
-
-
+            # force contribution of this particle to this node depends on its volume, the bulk modulus,
+            # the weighting, the gamma exponent value, and the previous deformation given by J
             force = -1.0 * particleVolume * (-1.0 * bulkModulus * ((1.0 / (Jp[particle] ** gamma)) - 1.0)) * dWeight * Jp[particle]
-
-
-
 
             # current momentum contribution of this particle to this node equals particle mass times weighting
             gridVelocity[base + offset] += particleMass * weight * (velocity[particle] + C[particle] @ nodePos)
@@ -346,7 +286,6 @@ def gridToParticle():
         # Create new velocity, affine velocity, and deformation matrix at zero
         newVelocity = ti.Vector.zero(float, 3)
         newC = ti.Matrix.zero(float, 3, 3)
-        #newF = ti.Matrix.zero(float, 3, 3)
 
         velocitySum = 0.0
 
@@ -370,10 +309,9 @@ def gridToParticle():
             newVelocity += weight * currGridVelocity
             # new affine velocity
             newC += 4.0 * gridDimFloat * weight * currGridVelocity.outer_product(currNodePos)
-            # new deformation matrix
-            #newF += currGridVelocity.outer_product(dWeight)
 
-
+            # Sum up the contributions of relevant grid node velocities to
+            # this particle, weighting them accordingly
             velocitySum += currGridVelocity.dot(dWeight)
 
 
@@ -384,12 +322,8 @@ def gridToParticle():
         # position += the velocity of this particle * the time step
         position[particle] += dt * velocity[particle]
 
-        # Update deformation matrix
-        #F[particle] = (ti.Matrix.identity(float, 3) + (dt * newF)) @ F[particle]
-
-
+        # Update deformation factor J
         Jp[particle] = (1.0 + dt * velocitySum) * Jp[particle]
-
 
 
 # Populate a 2D position field for visualization
@@ -411,10 +345,10 @@ writePly(0)
 
 from3Dto2D()
 
-gui.circles(position2D.to_numpy(), radius = 2.0, color=0x990000)
+gui.circles(position2D.to_numpy(), radius=2.0, color=0x990000)
 gui.show()
 
-numFrames = 200
+numFrames = 300
 
 for frame in range(numFrames):
     print("\nFrame " + str(frame))
@@ -428,7 +362,7 @@ for frame in range(numFrames):
 
     from3Dto2D()
 
-    gui.circles(position2D.to_numpy(), radius = 2.0, color=0x990000)
+    gui.circles(position2D.to_numpy(), radius=2.0, color=0x990000)
 
     gui.show()
 
