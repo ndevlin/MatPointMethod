@@ -8,10 +8,10 @@ import taichi as ti
 ti.init(arch=ti.gpu, excepthook=True)
 
 # Total # of particles
-numParticles = 150000
+numParticles = 128000
 
 # number of divisions in the nxnxn mpm grid
-gridDimInt = 40
+gridDimInt = 50
 
 gridDimFloat = float(gridDimInt)
 
@@ -41,8 +41,8 @@ frameRate = 24.0
 substepSize = 0.05
 
 # Determines the dimensions of the 2 cubes
-cube1Width = 0.2
-cube2Width = 0.2
+cube1Width = 0.3
+#cube2Width = 0.2
 
 # The time elapsed during one substep
 substepTime = (1.0 / frameRate) * substepSize
@@ -53,11 +53,11 @@ substepsPerFrame = int(1.0 / substepSize)
 dx = 1.0 / gridDimFloat
 
 # increase volume to allow overlap of particle volume regions
-volumeMultiplier = 1.0
+volumeMultiplier = 5.0
 
 # particle volume equals total volume of shapes divided by number of particles composing them
 # This should equate to roughly 8 particles per occupied grid node
-particleVolume = volumeMultiplier * ((cube1Width ** 3) + (cube2Width ** 3)) / float(numParticles)
+particleVolume = volumeMultiplier * (cube1Width ** 3) / float(numParticles)#+ (cube2Width ** 3)) / float(numParticles)
 
 # Assume uniform density and starting volume for every particle
 particleMass = particleVolume * particleDensity
@@ -154,11 +154,11 @@ def writePly(frameNum):
 @ti.kernel
 def setUp():
     # Create 2 cubes
-    particlesPerCube = numParticles // 2
+    particlesPerCube = numParticles #// 2
 
     # Set the position of the bottom-left corner of the cube
-    cube1Base[None] = [0.25, 0.5, 0.5]
-    cube2Base[None] = [0.35, 0.05, 0.5]
+    cube1Base[None] = [0.25, 0.05, 0.5]
+    #cube2Base[None] = [0.35, 0.05, 0.5]
 
     # First Cube
     # Set initial positions by allocating positions randomly within bounds of cube
@@ -173,6 +173,7 @@ def setUp():
         Jp[i] = 1.0
         C[i] = ti.Matrix.zero(float, 3, 3)
 
+    '''
     # Second Cube
     for i in range(particlesPerCube, numParticles):
         position[i] = [ti.random() * cube2Width + cube2Base[None][0],
@@ -184,6 +185,7 @@ def setUp():
         #F[i] = ti.Matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
         Jp[i] = 1.0
         C[i] = ti.Matrix.zero(float, 3, 3)
+    '''
 
 
 # Go through one iteration of the simulation
