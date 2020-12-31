@@ -1,6 +1,8 @@
 # Material Point Method Simulator written by Nathan Devlin
 # Referenced materials from Professor Chenfanfu Jiang and Xuan Li and Joshuah Wolper
 
+# Elastic version
+
 import taichi as ti
 
 # Use GPU for fast, near-real-time simulation,
@@ -84,9 +86,6 @@ C = ti.Matrix.field(3, 3, dtype=float, shape=numParticles)
 # Deformation gradient matrices
 F = ti.Matrix.field(3, 3, dtype=float, shape=numParticles)
 
-# Plastic deformation factor
-Jp = ti.field(dtype=float, shape=numParticles)
-
 
 # Grid data
 # Grid node momentum/velocity
@@ -166,7 +165,6 @@ def setUp():
         #Set intial velocities, angular momentum, Deformation gradient and Plastic deformation to 0
         velocity[i] = [0.0, 0.0, 0.0]
         F[i] = ti.Matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-        Jp[i] = 1.0
         C[i] = ti.Matrix.zero(float, 3, 3)
 
     # Second Cube
@@ -178,7 +176,6 @@ def setUp():
         # Set intial velocities, angular momentum, Deformation gradient and Plastic deformation to 0
         velocity[i] = [0.0, 0.0, 0.0]
         F[i] = ti.Matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-        Jp[i] = 1.0
         C[i] = ti.Matrix.zero(float, 3, 3)
 
 
@@ -220,10 +217,6 @@ def particleToGrid():
                     -2.0 * (relPosition - [1.0, 1.0, 1.0]),
                     relPosition - [0.5, 0.5, 0.5]]
 
-        # mu and lambda remain unchanged under normal elastic conditions
-        mu = mu0
-        lam = lambda0
-
         # Polar Singular Value Decomposition
         U, sigma, V = ti.svd(F[particle])
         J = 1.0
@@ -236,7 +229,7 @@ def particleToGrid():
         Ftrans = F[particle].transpose()
         Vtrans = V.transpose()
         identity = ti.Matrix.identity(float, 3)
-        kirchoffStress = 2 * mu * (F[particle] - (U @ Vtrans)) @ Ftrans + identity * lam * J * (J - 1)
+        kirchoffStress = 2 * mu0 * (F[particle] - (U @ Vtrans)) @ Ftrans + identity * lambda0 * J * (J - 1)
         # @ = Matrix Product in taichi
 
         # Update particle to grid velocity, mass and force
