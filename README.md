@@ -1,6 +1,10 @@
 # MatPointMethod
 
-Compilation and Running Instructions Readme
+## Nathan Devlin - @ndevlin - ndevlin@seas.upenn.edu - www.ndevlin.com
+
+![](Result.png)
+
+## Compilation and Running Instructions:
 
 The simulations are done in two .py files; one for elastic materials and one for fluid. 
 It is necessary that taichi is installed for the simulation to run. 
@@ -15,6 +19,7 @@ This can then be imported into a program like Houdini for viewing.
 
 Note that upon running, you may have to wait a few minutes while the taichi code compiles and the data is loaded to the processor, particularly if you are simulating many particles.
 
-Also, please note that I have included the demo videos within the submission. However, if you have any trouble viewing them, please visit https://drive.google.com/drive/folders/1v6SiQAxX_ALdB1xsnscZx7Jrsq1AVWDM
+Video of the output can be seen at:
+https://vimeo.com/501978353
 
 Thank you!
