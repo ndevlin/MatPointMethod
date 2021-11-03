@@ -8,10 +8,10 @@ import taichi as ti
 ti.init(arch=ti.gpu, excepthook=True)
 
 # Total # of particles
-numParticles = 10000
+numParticles = 128000
 
 # number of divisions in the nxnxn mpm grid
-gridDimInt = 100
+gridDimInt = 32
 
 gridDimFloat = float(gridDimInt)
 
@@ -19,10 +19,13 @@ gridDimFloat = float(gridDimInt)
 dt = 0.0000041666
 
 # Strength of the elasticity of this substance; larger values result in more rigid materials
-youngsMod = 200.0
+youngsMod = 1000.0
 
 # Between 0.0 and 0.5; the closer to 0.5, the more incompressible
-poissonRatio = 0.4
+poissonRatio = 0.35
+
+# Zeta controls rate of hardening or softening
+zeta = 10.0
 
 # Mass per unit volume
 particleDensity = 1.0
@@ -49,7 +52,7 @@ substepsPerFrame = int(1.0 / substepSize)
 dx = 1.0 / gridDimFloat
 
 # increase volume to allow overlap of particle volume regions
-volumeMultiplier = 10.0
+volumeMultiplier = 1.0
 
 # particle volume equals total volume of shapes divided by number of particles composing them
 # This should equate to roughly 8 particles per occupied grid node
@@ -64,6 +67,9 @@ mu0 = youngsMod / (2.0 * (1.0 + poissonRatio))
 
 # Dilational term
 lambda0 = (youngsMod * poissonRatio) / ((1.0 + poissonRatio) * (1.0 - 2.0 * poissonRatio))
+
+# Natural number e
+NATURALe = 2.7182818284
 
 # Bottom-left starting corner of each cube
 cube1Base = ti.Vector.field(3, dtype=float, shape=())
@@ -84,6 +90,8 @@ C = ti.Matrix.field(3, 3, dtype=float, shape=numParticles)
 # Deformation gradient matrices
 F = ti.Matrix.field(3, 3, dtype=float, shape=numParticles)
 
+# Elastic deformation matrices
+Fe = ti.Matrix.field(3, 3, dtype=float, shape=numParticles)
 
 # Plastic deformation matrices
 Fp = ti.Matrix.field(3, 3, dtype=float, shape=numParticles)
@@ -172,6 +180,8 @@ def setUp():
         velocity[i] = [0.0, 0.0, 0.0]
         F[i] = ti.Matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
         Fp[i] = ti.Matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        Fe[i] = ti.Matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+
         Jp[i] = 1.0
         C[i] = ti.Matrix.zero(float, 3, 3)
 
@@ -184,6 +194,10 @@ def setUp():
         # Set intial velocities, angular momentum, Deformation gradient and Plastic deformation to 0
         velocity[i] = [0.0, 0.0, 0.0]
         F[i] = ti.Matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        Fp[i] = ti.Matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        Fe[i] = ti.Matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+
+
         Jp[i] = 1.0
         C[i] = ti.Matrix.zero(float, 3, 3)
 
@@ -226,9 +240,13 @@ def particleToGrid():
                     -2.0 * (relPosition - [1.0, 1.0, 1.0]),
                     relPosition - [0.5, 0.5, 0.5]]
 
-        # mu and lambda remain unchanged under normal elastic conditions
-        mu = mu0
-        lam = lambda0
+        # mu and lambda change stiffness of material
+        mu = mu0 * (NATURALe ** (zeta * (1.0 - Jp[particle])))
+        lam = lambda0 * (NATURALe ** (zeta * (1.0 - Jp[particle])))
+
+        #mu = mu0
+        #lam = lambda0
+
 
         # Polar Singular Value Decomposition
         U, sigma, V = ti.svd(F[particle])
@@ -237,6 +255,8 @@ def particleToGrid():
         # Modify deformation gradient
         for i in ti.static(range(3)):
             J *= sigma[i, i]
+
+        Jp[particle] = Fp[particle].determinant()
 
         # Compute Kirchoff stress for elasticity
         Ftrans = F[particle].transpose()
@@ -360,6 +380,7 @@ def gridToParticle():
             # new deformation matrix
             newF += currGridVelocity.outer_product(dWeight)
 
+
         # Assign the computed velocity to this particle
         velocity[particle] = newVelocity
         C[particle] = newC
@@ -371,55 +392,30 @@ def gridToParticle():
 
 
         # Update deformation matrix
-        # F[particle] = (ti.Matrix.identity(float, 3) + (dt * newF)) @ F[particle]
+        #F[particle] = (ti.Matrix.identity(float, 3) + (dt * newF)) @ F[particle]
 
-        if(particle == 0):
-            FEtrial = (ti.Matrix.identity(float, 3) + (dt * newF)) @ F[particle]
-
-            print("FEtrial")
-            print(FEtrial)
-
-            U, sigma, V = ti.svd(FEtrial)
-
-            print("U")
-            print(U)
-            print("sigma")
-            print(sigma)
-            print("V")
-            print(V)
-
-            newSigma = sigma
-
-            for i in ti.static(range(3)):
-                if sigma[i, i] > 1.1:
-                    newSigma[i, i] = 1.1
-                if sigma[i, i] < 0.9:
-                    newSigma[i, i] = 0.9
-
-            print("newSigma")
-            print(newSigma)
-
-            newFElastic = (U @ newSigma) @ (V.transpose())
-
-            print("newFElastic")
-            print(newFElastic)
-
-            newFplastic = ((newFElastic.inverse()) @ FEtrial) @ Fp[particle]
-
-            print("newFplastic")
-            print(newFplastic)
-
-            Fp[particle] = newFplastic
-
-            print("Fp[particle]")
-            print(Fp[particle])
-
-            F[particle] = newFElastic @ newFplastic
-
-            print("F[particle]")
-            print(F[particle])
+        FEtrial = (ti.Matrix.identity(float, 3) + (dt * newF)) @ F[particle]
 
 
+
+        U, sigma, V = ti.svd(FEtrial)
+
+        newSigma = sigma
+
+        for i in ti.static(range(3)):
+            if sigma[i, i] > 1.001:
+                newSigma[i, i] = 1.001
+            if sigma[i, i] < 0.999:
+                newSigma[i, i] = 0.999
+
+        newFElastic = U @ newSigma @ V.transpose()
+
+
+        newFplastic = newFElastic.inverse() @ FEtrial @ Fp[particle]
+
+        Ftemp = newFElastic @ newFplastic
+
+        F[particle] = (ti.Matrix.identity(float, 3) + (dt * Ftemp)) @ F[particle]
 
 
 
